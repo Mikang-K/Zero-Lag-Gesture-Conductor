@@ -1,10 +1,10 @@
 {
-    "TAP_Left_index":  "f",
-    "TAP_Left_middle": "d",
-    "TAP_Left_ring":   "s",
-    "TAP_Left_pinky":  "a",
-    "TAP_Right_index":  "j",
-    "TAP_Right_middle": "k",
-    "TAP_Right_ring":   "l",
-    "TAP_Right_pinky":  ";"
+    "Left_index":  "f",
+    "Left_middle": "d",
+    "Left_ring":   "s",
+    "Left_pinky":  "a",
+    "Right_index":  "j",
+    "Right_middle": "k",
+    "Right_ring":   "l",
+    "Right_pinky":  ";"
 }

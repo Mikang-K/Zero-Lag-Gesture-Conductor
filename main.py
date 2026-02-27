@@ -99,6 +99,8 @@ def main():
                 break
             elif key == ord("e"):
                 emulation_enabled = not emulation_enabled
+                if not emulation_enabled:
+                    emulator.release_all()   # prevent stuck keys on toggle-off
                 print(f"[INFO] Emulation {'ENABLED' if emulation_enabled else 'DISABLED'}")
             elif key == ord("s"):
                 shot_path = Path("benchmarks") / f"frame_{int(time.time())}.png"
@@ -107,6 +109,7 @@ def main():
                 print(f"[INFO] Screenshot saved: {shot_path}")
 
     finally:
+        emulator.release_all()   # ensure no keys remain stuck on exit
         cam.release()
         tracker.close()
         monitor.close()
