@@ -1,5 +1,10 @@
 {
-    "TAP":         "space",
-    "SLIDE_LEFT":  "left",
-    "SLIDE_RIGHT": "right"
+    "TAP_Left_index":  "f",
+    "TAP_Left_middle": "d",
+    "TAP_Left_ring":   "s",
+    "TAP_Left_pinky":  "a",
+    "TAP_Right_index":  "j",
+    "TAP_Right_middle": "k",
+    "TAP_Right_ring":   "l",
+    "TAP_Right_pinky":  ";"
 }

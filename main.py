@@ -80,7 +80,7 @@ def main():
 
             # Print recognized gestures to console for debugging
             for event in events:
-                print(f"  [{event.hand}] {event.gesture.name}")
+                print(f"  [{event.hand}/{event.finger}] {event.gesture.name}")
 
             # Draw overlays
             tracker.draw(frame, track_result)

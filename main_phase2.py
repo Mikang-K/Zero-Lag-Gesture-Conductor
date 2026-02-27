@@ -124,7 +124,7 @@ def _run_single(args: argparse.Namespace):
             monitor.commit()
 
             for ev in events:
-                print(f"  [{ev.hand}] {ev.gesture.name}")
+                print(f"  [{ev.hand}/{ev.finger}] {ev.gesture.name}")
 
             tracker.draw(frame, track)
             monitor.draw_hud(frame)
@@ -226,7 +226,7 @@ def _run_multiprocess(args: argparse.Namespace):
             monitor.commit()
 
             for ev in events:
-                print(f"  [{ev.hand}] {ev.gesture.name}")
+                print(f"  [{ev.hand}/{ev.finger}] {ev.gesture.name}")
 
             # Decode camera frame for display; fall back to black canvas if unavailable
             if result.frame_jpeg:

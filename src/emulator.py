@@ -3,9 +3,13 @@ emulator.py — Input emulation module
 Converts GestureEvent objects into OS-level keyboard events via pyautogui.
 
 Default key mapping (configurable via config/keymap.json):
-    TAP          -> Space
-    SLIDE_LEFT   -> Left arrow
-    SLIDE_RIGHT  -> Right arrow
+    Left  index→f, middle→d, ring→s, pinky→a
+    Right index→j, middle→k, ring→l, pinky→;
+
+Key lookup priority in emit():
+    1. "{gesture}_{hand}_{finger}"  e.g. "TAP_Left_index"
+    2. "{gesture}_{finger}"         e.g. "TAP_index"
+    3. "{gesture}"                  e.g. "TAP"  (fallback for old keymaps)
 """
 
 import json
@@ -13,7 +17,7 @@ import time
 import pyautogui
 from pathlib import Path
 
-from recognizer import GestureEvent, GestureType
+from recognizer import GestureEvent
 
 
 # Disable pyautogui's built-in failsafe pause (we handle timing ourselves)
@@ -21,9 +25,16 @@ pyautogui.PAUSE = 0.0
 
 
 _DEFAULT_KEYMAP: dict[str, str] = {
-    GestureType.TAP.name:         "space",
-    GestureType.SLIDE_LEFT.name:  "left",
-    GestureType.SLIDE_RIGHT.name: "right",
+    # Left hand: index→f, middle→d, ring→s, pinky→a
+    "TAP_Left_index":  "f",
+    "TAP_Left_middle": "d",
+    "TAP_Left_ring":   "s",
+    "TAP_Left_pinky":  "a",
+    # Right hand: index→j, middle→k, ring→l, pinky→;
+    "TAP_Right_index":  "j",
+    "TAP_Right_middle": "k",
+    "TAP_Right_ring":   "l",
+    "TAP_Right_pinky":  ";",
 }
 
 
@@ -44,7 +55,12 @@ class InputEmulator:
         Send the OS-level key event for the given gesture.
         Returns the emulation latency in milliseconds.
         """
-        key = self._keymap.get(event.gesture.name)
+        g = event.gesture.name
+        key = (
+            self._keymap.get(f"{g}_{event.hand}_{event.finger}")
+            or self._keymap.get(f"{g}_{event.finger}")
+            or self._keymap.get(g)
+        )
         if key is None:
             return 0.0
 
