@@ -42,11 +42,36 @@ class _MovingAverage:
 
 
 class _FingerState:
-    """Per-hand state machine tracking a single finger tip (INDEX_TIP by default)."""
+    """Per-hand state machine tracking a single finger tip (INDEX_TIP by default).
 
-    # Tunable thresholds
-    TAP_VELOCITY_THRESHOLD = 0.025   # normalized units/frame — downward speed (lowered for higher sensitivity)
-    SLIDE_DISPLACEMENT_X = 0.15      # normalized units — horizontal travel
+    Rhythm-game optimised: TAP fires on the DOWNSTROKE (finger moving down),
+    not on release. This eliminates the press-to-release structural delay so
+    that the input event reaches the game at the earliest possible moment.
+
+    State machine:
+      UP   → downstroke detected  → fire TAP immediately, enter DOWN state
+      DOWN → upstroke detected    → re-enter UP state (ready for next tap)
+           → horizontal travel    → fire SLIDE, re-enter UP state
+           → cooldown expired     → force re-enter UP state (finger held down)
+    """
+
+    # --- Tunable thresholds ---
+    # Downward velocity (normalized units/frame) to register a press.
+    # Lowering this increases sensitivity but also false-positive rate.
+    TAP_VELOCITY_THRESHOLD = 0.025
+
+    # Upward velocity to register a release (gentler than press so a soft
+    # lift still resets the state and allows the next tap).
+    RELEASE_VELOCITY_THRESHOLD = 0.010
+
+    # Minimum time between consecutive TAP events on the same finger.
+    # 100 ms → max ~BPM 600, well above any rhythm game requirement.
+    # Prevents a single slow downstroke from firing multiple frames.
+    TAP_COOLDOWN_S = 0.10
+
+    # Horizontal displacement (normalized) required to register a slide
+    # while the finger is in the DOWN state.
+    SLIDE_DISPLACEMENT_X = 0.15
 
     def __init__(self):
         self._avg_y = _MovingAverage(window=5)
@@ -54,43 +79,52 @@ class _FingerState:
         self._prev_y: float | None = None
         self._prev_x: float | None = None
 
-        # Tap
+        # DOWN state flag and the timestamp when we entered it
         self._pressed: bool = False
         self._press_time: float = 0.0
 
-        # Slide
+        # X position at the moment the finger went down (slide origin)
         self._slide_origin_x: float | None = None
 
     def update(self, hand: HandLandmarks) -> tuple[GestureType, float]:
         raw_x, raw_y, _ = hand.get(LandmarkIndex.INDEX_TIP)
-        # Wrist Y used as reference to make detection scale-invariant
-        _, wrist_y, _ = hand.get(LandmarkIndex.WRIST)
-        _, index_mcp_y, _ = hand.get(LandmarkIndex.INDEX_MCP)
-
         smooth_y = self._avg_y.update(raw_y)
         smooth_x = self._avg_x.update(raw_x)
 
         gesture = GestureType.NONE
         onset_ms = 0.0
 
-        # --- Tap detection via Y velocity ---
         if self._prev_y is not None:
             vel_y = smooth_y - self._prev_y   # positive = moving down (screen coords)
+            now = time.perf_counter()
+            cooldown_elapsed = (now - self._press_time) >= self.TAP_COOLDOWN_S
 
-            if vel_y > self.TAP_VELOCITY_THRESHOLD and not self._pressed:
-                self._pressed = True
-                self._press_time = time.perf_counter()
-                self._slide_origin_x = smooth_x
-
-            elif self._pressed:
-                if vel_y < -self.TAP_VELOCITY_THRESHOLD:
-                    # Finger lifted → TAP; measure time from press detection
-                    onset_ms = (time.perf_counter() - self._press_time) * 1000.0
+            if not self._pressed:
+                # --- UP state: wait for downstroke ---
+                if vel_y > self.TAP_VELOCITY_THRESHOLD:
+                    # Fire TAP immediately on first downward frame.
+                    # onset_ms = 0 because there is no press-to-fire delay.
+                    self._pressed = True
+                    self._press_time = now
+                    self._slide_origin_x = smooth_x
                     gesture = GestureType.TAP
+                    onset_ms = 0.0
+            else:
+                # --- DOWN state: watch for release or held-past-cooldown ---
+                if vel_y < -self.RELEASE_VELOCITY_THRESHOLD and cooldown_elapsed:
+                    # Finger lifted cleanly after the cooldown window → reset
                     self._pressed = False
                     self._slide_origin_x = None
+                elif cooldown_elapsed and vel_y > self.TAP_VELOCITY_THRESHOLD:
+                    # Rapid re-tap: cooldown already elapsed and another
+                    # downstroke is detected; treat as a new tap immediately.
+                    self._press_time = now
+                    self._slide_origin_x = smooth_x
+                    gesture = GestureType.TAP
+                    onset_ms = 0.0
 
-        # --- Slide detection via X displacement while pressed ---
+        # --- Slide detection: horizontal travel while in DOWN state ---
+        # Checked independently so a slide can follow a TAP in the same stroke.
         if self._pressed and self._slide_origin_x is not None:
             dx = smooth_x - self._slide_origin_x
             if abs(dx) > self.SLIDE_DISPLACEMENT_X:

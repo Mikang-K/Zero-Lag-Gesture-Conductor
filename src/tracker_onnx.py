@@ -48,7 +48,7 @@ _LANDMARK_SIZE = 224
 _ANCHOR_STRIDES = [8, 16, 16, 16]
 _MIN_SCALE = 0.1484375
 _MAX_SCALE = 0.75
-_SCORE_THRESHOLD = 0.85 # raised from 0.5 — reduces background false positives
+_SCORE_THRESHOLD = 0.50 # raised from 0.5 — reduces background false positives
 _NMS_IOU_THRESHOLD = 0.3
 _ROI_SCALE_FACTOR = 2.6    # padding multiplier around detected palm
 _ROI_SHIFT_Y = -0.15       # shift ROI upward slightly to include wrist
@@ -95,14 +95,18 @@ def _decode_boxes(raw_boxes: np.ndarray, anchors: np.ndarray) -> np.ndarray:
     Decode SSD raw predictions into [cx, cy, w, h, kp0_x, kp0_y, ..., kp6_x, kp6_y].
     raw_boxes: [N, 18], anchors: [N, 4] (cx, cy, w, h)
     Returns: [N, 18] with coordinates in [0,1] image-normalized space.
+
+    Box center offsets use anchor scale; w/h and keypoints are in raw pixel
+    units of the 192×192 detector input (divide by _DETECTOR_SIZE only).
     """
     out = raw_boxes.copy()
-    # Box center and size (first 4 values)
+    # Box center: offset scaled by anchor size, added to anchor center
     out[:, 0] = raw_boxes[:, 0] / _DETECTOR_SIZE * anchors[:, 2] + anchors[:, 0]  # cx
     out[:, 1] = raw_boxes[:, 1] / _DETECTOR_SIZE * anchors[:, 3] + anchors[:, 1]  # cy
-    out[:, 2] = raw_boxes[:, 2] / _DETECTOR_SIZE * anchors[:, 2]                  # w
-    out[:, 3] = raw_boxes[:, 3] / _DETECTOR_SIZE * anchors[:, 3]                  # h
-    # Keypoints (values 4..17)
+    # Box size: raw pixel displacement relative to 192×192 input (no anchor scale)
+    out[:, 2] = raw_boxes[:, 2] / _DETECTOR_SIZE                                   # w
+    out[:, 3] = raw_boxes[:, 3] / _DETECTOR_SIZE                                   # h
+    # Keypoints: same encoding as center
     for k in range(7):
         out[:, 4 + k * 2]     = raw_boxes[:, 4 + k * 2]     / _DETECTOR_SIZE * anchors[:, 2] + anchors[:, 0]
         out[:, 4 + k * 2 + 1] = raw_boxes[:, 4 + k * 2 + 1] / _DETECTOR_SIZE * anchors[:, 3] + anchors[:, 1]
@@ -266,7 +270,7 @@ class OnnxHandTracker:
 
         # ── 1. Palm detection ──
         det_input = cv2.resize(rgb, (_DETECTOR_SIZE, _DETECTOR_SIZE))
-        det_input = (det_input.astype(np.float32) / 127.5) - 1.0   # [-1, 1]
+        det_input = det_input.astype(np.float32) / 255.0            # [0, 1]
         det_input = det_input[np.newaxis]                            # [1,192,192,3]
 
         raw_boxes_batch, raw_scores_batch = self._det_sess.run(
@@ -299,14 +303,14 @@ class OnnxHandTracker:
                 flags=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
             )
-            lm_input = (crop.astype(np.float32) / 255.0)[np.newaxis]   # [1,224,224,3]
+            lm_input = (crop.astype(np.float32) / 255.0)[np.newaxis]   # [1,224,224,3], [0,1]
 
             lm_out = self._lm_sess.run(None, {self._lm_input: lm_input})
             lm_coords   = lm_out[0][0]    # [63] = 21×3 in crop [0,224] space
-            handedness  = float(lm_out[1][0][0])   # >0.5 → Right
-            presence    = float(lm_out[2][0][0])
+            presence    = float(lm_out[1][0][0])   # hand flag: high = hand present
+            handedness  = float(lm_out[2][0][0])   # >0.5 → Right
 
-            if presence < 0.7:   # raised from 0.5 — rejects landmark model's low-confidence outputs
+            if presence < 0.5:
                 continue
 
             # Inverse affine: crop coords → image coords

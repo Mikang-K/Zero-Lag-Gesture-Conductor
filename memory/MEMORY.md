@@ -49,15 +49,28 @@ zero-lag-gesture-conductor/
 4. inverse affine → image-space landmark coords
 
 ## Gesture Thresholds (recognizer.py)
-- TAP_VELOCITY_THRESHOLD = 0.035
-- LONG_PRESS_DURATION_S = 0.55
-- SLIDE_DISPLACEMENT_X = 0.15
+- TAP fires on DOWNSTROKE immediately (onset_ms = 0) — rhythm-game optimised
+- TAP_VELOCITY_THRESHOLD = 0.025 (downward, normalized/frame)
+- RELEASE_VELOCITY_THRESHOLD = 0.010 (upward, gentler — resets DOWN state)
+- TAP_COOLDOWN_S = 0.10 (100ms — max ~BPM 600, prevents double-fire)
+- SLIDE_DISPLACEMENT_X = 0.15 (horizontal travel while in DOWN state)
 - MovingAverage window = 5
 
 ## Python Environment
 - Python 3.13.7, CUDA 12.6, RTX 4070
 - opencv-python 4.13, mediapipe 0.10.32, onnxruntime-gpu 1.24.2
 - pyautogui 0.9.54, numpy 2.2.6, onnx 1.20.1
+
+## CameraCapture (capture.py)
+- `threaded=True` (기본값): 백그라운드 스레드가 cap.read() 루프, main은 queue.get()으로 즉시 획득
+- `threaded=False`: 기존 blocking cap.read() (레거시/비교용)
+- 측정 latency: threaded → 프레임 staleness(큐 대기 시간), blocking → grab+decode 시간
+- pipeline_mp.py 내부 _capture_worker는 별도 프로세스이므로 변경 없음
+
+## compare.py 구조 (3개 섹션)
+- Section 1: 트래커 백엔드 비교 (blocking read 고정)
+- Section 2: 캡처 방식 비교 (ONNX CUDA × {blocking, threaded})
+- Section 3: 리듬게임 기준 (E2E < 16.7ms) PASS/FAIL 요약
 
 ## Phase 3 계획
 - C++로 캡처+ONNX 추론 모듈 재작성 (OpenCV C++ + ONNX Runtime C++ API)

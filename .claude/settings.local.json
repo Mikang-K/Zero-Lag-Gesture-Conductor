@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip show opencv-python mediapipe pyautogui numpy)"
+      "Bash(pip show opencv-python mediapipe pyautogui numpy)",
+      "Bash(python -c \":*)"
     ]
   }
 }
