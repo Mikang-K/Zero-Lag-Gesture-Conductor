@@ -1,14 +1,26 @@
 """
 recognizer.py — Gesture recognition engine
-Detects Press/Release gestures from hand landmark sequences.
-Uses a moving-average filter on finger tip positions to reduce noise.
-Tracks 4 fingers per hand (index, middle, ring, pinky) independently.
+Detects Press/Release for the index finger using a 3-state machine.
 
-State machine per finger:
-  UP   → downstroke (vel_y > threshold) → fire PRESS,  enter DOWN state
-  DOWN → upstroke   (vel_y < -threshold) → fire RELEASE, enter UP state
+Gesture mapping:
+  Index finger fully extended, pressed DOWN  → PRESS  (space keyDown)
+  Index finger lifted back UP                → RELEASE (space keyUp)
+
+Extension gate: events only fire when the index TIP-to-MCP normalized
+distance is above MIN_EXTENDED_DIST at the moment of arming (RESTING →
+READY). This prevents false triggers when the finger is curled inward.
+
+Assumes a top-down camera looking at the back of the hand, with the hand
+resting flat on a surface.
+
+3-state machine:
+  RESTING → (lift: dist decreases fast AND finger was extended) → READY
+  READY   → (lower: dist increases fast) → PRESSED  [fires PRESS]
+  PRESSED → (lift: dist decreases fast)  → READY    [fires RELEASE]
+  READY   → (timeout 0.8 s)             → RESTING   [accidental lift reset]
 """
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -17,28 +29,40 @@ from enum import Enum, auto
 from tracker import HandLandmarks, LandmarkIndex
 
 
-# Fingers to track and their corresponding landmark tip indices
-TRACKED_FINGERS: dict[str, int] = {
-    "index":  LandmarkIndex.INDEX_TIP,
-    "middle": LandmarkIndex.MIDDLE_TIP,
-    "ring":   LandmarkIndex.RING_TIP,
-    "pinky":  LandmarkIndex.PINKY_TIP,
-}
+# Normalized TIP-to-MCP distance below which the finger is NOT considered extended
+MIN_EXTENDED_DIST = 0.50  # relative to palm size
+
+# Velocity thresholds (normalized by palm size per frame)
+_LIFT_VEL  = 0.022   # lifting speed to enter READY    (negative direction)
+_LOWER_VEL = 0.018   # lowering speed to fire PRESS    (positive direction)
+
+
+def _palm_size(hand: HandLandmarks) -> float:
+    """WRIST→MIDDLE_MCP distance used to normalize distances."""
+    wx, wy, _ = hand.get(LandmarkIndex.WRIST)
+    mx, my, _ = hand.get(LandmarkIndex.MIDDLE_MCP)
+    return max(math.hypot(wx - mx, wy - my), 1e-6)
 
 
 class GestureType(Enum):
-    NONE = auto()
-    PRESS = auto()    # finger moves down  → keyDown
-    RELEASE = auto()  # finger moves back up → keyUp
+    NONE    = auto()
+    PRESS   = auto()   # finger lowered after being lifted → keyDown
+    RELEASE = auto()   # finger lifted again after press   → keyUp
+
+
+class _State(Enum):
+    RESTING = auto()   # finger flat/extended on surface
+    READY   = auto()   # finger lifted, armed for a press
+    PRESSED = auto()   # finger pressed back down, key held
 
 
 @dataclass
 class GestureEvent:
     gesture: GestureType
     hand: str           # "Left" or "Right"
-    finger: str         # "index", "middle", "ring", "pinky"
+    finger: str         # always "index"
     confidence: float   # 0.0–1.0
-    onset_ms: float = 0.0  # time from press detection to event firing (ms)
+    onset_ms: float = 0.0
 
 
 class _MovingAverage:
@@ -50,91 +74,87 @@ class _MovingAverage:
         self._buf.append(value)
         return sum(self._buf) / len(self._buf)
 
-    @property
-    def value(self) -> float:
-        return sum(self._buf) / len(self._buf) if self._buf else 0.0
 
+class _IndexFingerState:
+    """3-state machine for the index finger using TIP→MCP curl distance.
 
-class _FingerState:
-    """Per-finger state machine tracking a single finger tip.
-
-    PRESS fires immediately on downstroke so the key reaches the game at the
-    earliest possible moment. RELEASE fires when the finger lifts back up,
-    enabling natural long-note (hold) behaviour.
+    Top-down camera geometry:
+      - Finger flat/extended on surface : TIP far from MCP  → large distance
+      - Finger lifted up                : TIP closer to MCP → distance decreases
+      - Finger pressed back down        : TIP far from MCP  → distance increases
     """
 
-    # --- Tunable thresholds ---
-    # Downward velocity (normalized units/frame) to register a press.
-    PRESS_VELOCITY_THRESHOLD = 0.025
+    READY_TIMEOUT_S = 0.8
 
-    # Upward velocity to register a release. Gentler than press so a soft
-    # lift still resets the state.
-    RELEASE_VELOCITY_THRESHOLD = 0.010
+    def __init__(self):
+        self._avg_dist = _MovingAverage(window=5)
+        self._smooth_dist: float = 0.0
+        self._initialized: bool = False
+        self._state: _State = _State.RESTING
+        self._state_entered: float = 0.0
+        self._last_onset_ms: float = 0.0
 
-    # Minimum time after pressing before a release is accepted.
-    # Prevents spurious immediate releases from tracking noise.
-    PRESS_HOLD_MIN_S = 0.05
+    def update(self, hand: HandLandmarks) -> GestureType:
+        tx, ty, _ = hand.get(LandmarkIndex.INDEX_TIP)
+        mx, my, _ = hand.get(LandmarkIndex.INDEX_MCP)
+        raw_dist = math.hypot(tx - mx, ty - my) / _palm_size(hand)
+        new_dist = self._avg_dist.update(raw_dist)
 
-    def __init__(self, tip_index: int):
-        self._tip = tip_index
-        self._avg_y = _MovingAverage(window=5)
-        self._prev_y: float | None = None
+        if not self._initialized:
+            self._smooth_dist = new_dist
+            self._initialized = True
+            return GestureType.NONE
 
-        # True while the finger is considered "held down"
-        self._pressed: bool = False
-        self._press_time: float = 0.0
+        vel = new_dist - self._smooth_dist   # negative = lifting, positive = lowering
+        self._smooth_dist = new_dist
+        now = time.perf_counter()
 
-    def update(self, hand: HandLandmarks) -> tuple[GestureType, float]:
-        raw_x, raw_y, _ = hand.get(self._tip)
-        smooth_y = self._avg_y.update(raw_y)
+        if self._state == _State.RESTING:
+            # Only arm if the finger was clearly extended before lifting
+            if vel < -_LIFT_VEL and new_dist >= MIN_EXTENDED_DIST:
+                self._state = _State.READY
+                self._state_entered = now
 
-        gesture = GestureType.NONE
-        onset_ms = 0.0
+        elif self._state == _State.READY:
+            if (now - self._state_entered) > self.READY_TIMEOUT_S:
+                self._state = _State.RESTING
+            elif vel > _LOWER_VEL:
+                self._last_onset_ms = (now - self._state_entered) * 1000.0
+                self._state = _State.PRESSED
+                self._state_entered = now
+                return GestureType.PRESS
 
-        if self._prev_y is not None:
-            vel_y = smooth_y - self._prev_y   # positive = moving down (screen coords)
-            now = time.perf_counter()
+        elif self._state == _State.PRESSED:
+            if vel < -_LIFT_VEL:
+                self._last_onset_ms = 0.0
+                self._state = _State.READY
+                self._state_entered = now
+                return GestureType.RELEASE
 
-            if not self._pressed:
-                # --- UP state: wait for downstroke ---
-                if vel_y > self.PRESS_VELOCITY_THRESHOLD:
-                    self._pressed = True
-                    self._press_time = now
-                    gesture = GestureType.PRESS
-            else:
-                # --- DOWN state: wait for genuine upstroke ---
-                hold_elapsed = (now - self._press_time) >= self.PRESS_HOLD_MIN_S
-                if hold_elapsed and vel_y < -self.RELEASE_VELOCITY_THRESHOLD:
-                    self._pressed = False
-                    gesture = GestureType.RELEASE
-
-        self._prev_y = smooth_y
-        return gesture, onset_ms
+        return GestureType.NONE
 
 
 class GestureRecognizer:
     def __init__(self):
-        # Separate state per (hand_label, finger_name)
-        self._states: dict[tuple[str, str], _FingerState] = {}
+        # One state machine per detected hand label ("Left" / "Right")
+        self._states: dict[str, _IndexFingerState] = {}
 
     def update(self, hands: list[HandLandmarks]) -> list[GestureEvent]:
         events: list[GestureEvent] = []
 
         for hand in hands:
             label = hand.handedness
-            for finger_name, tip_idx in TRACKED_FINGERS.items():
-                key = (label, finger_name)
-                if key not in self._states:
-                    self._states[key] = _FingerState(tip_index=tip_idx)
+            if label not in self._states:
+                self._states[label] = _IndexFingerState()
 
-                gesture, onset_ms = self._states[key].update(hand)
-                if gesture != GestureType.NONE:
-                    events.append(GestureEvent(
-                        gesture=gesture,
-                        hand=label,
-                        finger=finger_name,
-                        confidence=1.0,   # placeholder; refine in Phase 2
-                        onset_ms=onset_ms,
-                    ))
+            gesture = self._states[label].update(hand)
+            if gesture != GestureType.NONE:
+                events.append(GestureEvent(
+                    gesture=gesture,
+                    hand=label,
+                    finger="index",
+                    confidence=1.0,
+                    onset_ms=self._states[label]._last_onset_ms,
+                ))
 
         return events

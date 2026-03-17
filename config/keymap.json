@@ -1,10 +1,4 @@
 {
-    "Left_index":  "f",
-    "Left_middle": "d",
-    "Left_ring":   "s",
-    "Left_pinky":  "a",
-    "Right_index":  "j",
-    "Right_middle": "k",
-    "Right_ring":   "l",
-    "Right_pinky":  ";"
+    "Left_index":  "space",
+    "Right_index": "space"
 }

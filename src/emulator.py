@@ -3,12 +3,12 @@ emulator.py — Input emulation module
 Converts GestureEvent objects into OS-level keyboard events via pydirectinput.
 
 Default key mapping (configurable via config/keymap.json):
-    Left  index→f, middle→d, ring→s, pinky→a
-    Right index→j, middle→k, ring→l, pinky→;
+    Left  index → space
+    Right index → space
 
 Key lookup uses "{hand}_{finger}" (e.g. "Left_index").
-PRESS  → keyDown  (finger goes down, key held)
-RELEASE → keyUp   (finger lifts,    key released)
+PRESS   → keyDown  (finger pressed down, key held)
+RELEASE → keyUp    (finger lifted,       key released)
 """
 
 import json
@@ -26,16 +26,8 @@ pydirectinput.PAUSE = 0.0
 
 
 _DEFAULT_KEYMAP: dict[str, str] = {
-    # Left hand: index→f, middle→d, ring→s, pinky→a
-    "Left_index":  "f",
-    "Left_middle": "d",
-    "Left_ring":   "s",
-    "Left_pinky":  "a",
-    # Right hand: index→j, middle→k, ring→l, pinky→;
-    "Right_index":  "j",
-    "Right_middle": "k",
-    "Right_ring":   "l",
-    "Right_pinky":  ";",
+    "Left_index":  "space",
+    "Right_index": "space",
 }
 
 
